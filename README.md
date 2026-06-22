@@ -47,7 +47,7 @@ fit <- penalized_pca(X, groups, r = 3, rho = tau * lambda_global[1:3])
 
 > Fathi, H., Cremona, M. A., and Severino, F. (2026).
 > Globally aligned Principal Component Analysis for multi-group data.
-> *Journal of Computational and Graphical Statistics* (under review).
+> submitted.
 
 ## License
 
