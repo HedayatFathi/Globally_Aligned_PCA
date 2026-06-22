@@ -1,0 +1,355 @@
+
+
+---
+title: "Simulation study: Globally aligned PCA"
+author: "Hedayat Fathi"
+date: "`r Sys.Date()`"
+output:
+  html_notebook:
+    toc: yes
+    toc_float: yes
+    toc_depth: 3
+    df_print: paged
+---
+
+This notebook reproduces the Monte Carlo simulation study in the paper
+*"Globally aligned Principal Component Analysis for multi-group data."*
+The core method and the performance criteria (W, PVE, A, S) live in
+`Global_PCA.R` and are loaded below.
+
+# Setup
+
+```{r setup, message=FALSE}
+library(dplyr)   # data wrangling for the result tables
+library(MASS)    # mvrnorm() for data generation
+library(knitr)   # kable() for table display
+
+# Load the method and the rank-r criteria
+source("Global_PCA.R")
+```
+
+
+# Data generation
+
+Generate a multi-group Gaussian model with `r_true` shared global directions,
+perturbed independently within each group. `sigma_theta` controls how far the
+group-wise directions deviate from the shared global directions.
+
+```{r data-generation}
+generate_sim_data <- function(p            = 10,
+                              K            = 8,
+                              n_per_group  = rep(50, K),
+                              sigma_theta  = 0.3,
+                              r_true       = 3,
+                              lambda_vec   = c(4, 2, 1.5),
+                              lambda_noise = 1,
+                              seed         = NULL) {
+  if (!is.null(seed)) set.seed(seed)
+  if (length(n_per_group) == 1L) n_per_group <- rep(n_per_group, K)
+
+  # 1) Global orthonormal directions U0 (p x r_true)
+  U0_raw <- matrix(rnorm(p * r_true), nrow = p, ncol = r_true)
+  U0     <- qr.Q(qr(U0_raw))
+
+  # 2) Group-specific directions: perturb then Gram-Schmidt
+  u_true     <- array(NA_real_, dim = c(p, r_true, K))
+  Sigma_list <- vector("list", K)
+
+  for (k in seq_len(K)) {
+    U_perturbed <- matrix(NA_real_, nrow = p, ncol = r_true)
+    for (j in seq_len(r_true)) {
+      eta_kj           <- rnorm(p, mean = 0, sd = sigma_theta)
+      tmp              <- U0[, j] + eta_kj
+      U_perturbed[, j] <- tmp / sqrt(sum(tmp^2))
+    }
+    # Gram-Schmidt via QR
+    U_k          <- qr.Q(qr(U_perturbed))
+    u_true[,, k] <- U_k
+
+    # Sigma_k = lambda_noise * I + sum_j (lambda_j - lambda_noise) u_kj u_kj^T
+    Sigma_k <- lambda_noise * diag(p)
+    for (j in seq_len(r_true)) {
+      u_kj    <- U_k[, j]
+      Sigma_k <- Sigma_k + (lambda_vec[j] - lambda_noise) * (u_kj %*% t(u_kj))
+    }
+    Sigma_list[[k]] <- Sigma_k
+  }
+
+  # 3) Generate data
+  X_list    <- list()
+  group_vec <- character(sum(n_per_group))
+  start_idx <- 1
+
+  for (k in seq_len(K)) {
+    nk      <- n_per_group[k]
+    X_k     <- MASS::mvrnorm(n = nk, mu = rep(0, p), Sigma = Sigma_list[[k]])
+    X_list[[k]] <- X_k
+    end_idx <- start_idx + nk - 1
+    group_vec[start_idx:end_idx] <- paste0("G", k)
+    start_idx <- end_idx + 1
+  }
+
+  X_all  <- do.call(rbind, X_list)
+  groups <- factor(group_vec, levels = paste0("G", seq_len(K)))
+
+  list(X = X_all, groups = groups, U0 = U0,
+       u_true = u_true, Sigma_true = Sigma_list, n_per_group = n_per_group)
+}
+```
+
+
+
+# One replicate
+
+Generate one dataset, then evaluate the three methods (global, group-wise,
+aligned) for every `r` and every alignment strength `tau`. The criteria
+`compute_*_r()` and `Global_PCA()` come from `Global_PCA.R`.
+
+```{r one-replicate}
+run_one_rep <- function(p            = 10,
+                        K            = 8,
+                        n_per_group  = rep(50, K),
+                        sigma_theta  = 0.3,
+                        tau_grid     = c(0, 0.5, 1, 2, 3),
+                        r_values     = c(1, 2, 3),
+                        r_true       = 3,
+                        lambda_vec   = c(4, 2, 1.5),
+                        lambda_noise = 1,
+                        seed         = NULL) {
+
+  sim    <- generate_sim_data(p = p, K = K, n_per_group = n_per_group,
+                              sigma_theta = sigma_theta, r_true = r_true,
+                              lambda_vec = lambda_vec, lambda_noise = lambda_noise,
+                              seed = seed)
+  X      <- sim$X; groups <- sim$groups; u_true <- sim$u_true
+  K      <- length(levels(groups))
+
+  X_scaled <- scale(X, center = TRUE, scale = FALSE)
+
+  # Pooled (global) covariance and eigendecomposition
+  Sigma_glob_hat <- cov(X_scaled)
+  eig_glob_hat   <- eigen(Sigma_glob_hat, symmetric = TRUE)
+  lambda_global  <- eig_glob_hat$values
+  V_global_all   <- eig_glob_hat$vectors
+
+  group_levels     <- levels(groups)
+  p_dim            <- ncol(X_scaled)
+  Sigma_k_hat_list <- lapply(seq_len(K), function(k) {
+    idx <- which(groups == group_levels[k])
+    cov(X_scaled[idx, , drop = FALSE])
+  })
+
+  results_list <- list()
+
+  for (r in r_values) {
+
+    V_global_r <- V_global_all[, 1:r, drop = FALSE]
+
+    # --- Global method: same r global directions in every group ---
+    V_global_list <- lapply(seq_len(K), function(k) V_global_r)
+
+    results_list[[length(results_list) + 1L]] <- data.frame(
+      method      = "global",
+      r           = r,
+      tau         = -1, # placeholder so this row aggregates cleanly
+      mean_angle  = compute_angle_error_r(V_global_list, u_true) * 180 / pi,
+      W           = compute_W_r(V_global_list, Sigma_k_hat_list),
+      PVE_pct     = 100 * compute_PVE_r(V_global_list, Sigma_k_hat_list),
+      A           = compute_A_r(V_global_list, V_global_r),
+      S           = compute_S_r(V_global_list)
+    )
+
+    # --- Group-wise (tau = 0) and aligned (tau > 0) ---
+    for (tau_val in tau_grid) {
+
+      if (tau_val == 0) {
+        # Group-wise: leading r eigenvectors of each Sigma_k_hat
+        V_list <- lapply(seq_len(K), function(k) {
+          eig_k <- eigen(Sigma_k_hat_list[[k]], symmetric = TRUE)
+          eig_k$vectors[, 1:r, drop = FALSE]
+        })
+        method_name <- "groupwise"
+      } else {
+        # Aligned PCA with rho_m = tau * lambda_global_m
+        rho_vec <- tau_val * lambda_global[1:r]
+        fit_pen <- Global_PCA(X = X_scaled, groups = groups, r = r,
+                                 rho = rho_vec, center = FALSE, scale. = FALSE)
+        V_list <- lapply(seq_len(K), function(k) {
+          V_k_raw <- fit_pen$per_group[[k]]$eig$vectors[, 1:r, drop = FALSE]
+          qr.Q(qr(V_k_raw))
+        })
+        method_name <- "aligned"
+      }
+
+      results_list[[length(results_list) + 1L]] <- data.frame(
+        method     = method_name,
+        r          = r,
+        tau        = tau_val,
+        mean_angle = compute_angle_error_r(V_list, u_true) * 180 / pi,
+        W          = compute_W_r(V_list, Sigma_k_hat_list),
+        PVE_pct    = 100 * compute_PVE_r(V_list, Sigma_k_hat_list),
+        A          = compute_A_r(V_list, V_global_r),
+        S          = compute_S_r(V_list)
+      )
+    }
+  }
+
+  do.call(rbind, results_list)
+}
+```
+
+
+
+# Full simulation
+
+Repeat `run_one_rep()` over `R` replications at a fixed `sigma_theta`,
+recording the replicate index and settings.
+
+```{r full-simulation}
+run_simulation <- function(R            = 200,
+                           p            = 10,
+                           K            = 8,
+                           n_per_group  = rep(50, K),
+                           sigma_theta  = 0.3,
+                           tau_grid     = c(0, 0.5, 1, 2, 3),
+                           r_values     = c(1, 2, 3),
+                           r_true       = 3,
+                           lambda_vec   = c(4, 2, 1.5),
+                           lambda_noise = 1,
+                           base_seed    = 2025) {
+  res_list <- vector("list", R)
+  for (rep in seq_len(R)) {
+    cat("Replicate", rep, "of", R, "\n")
+    res_list[[rep]] <- run_one_rep(
+      p = p, K = K, n_per_group = n_per_group,
+      sigma_theta  = sigma_theta,
+      tau_grid     = tau_grid,
+      r_values     = r_values,
+      r_true       = r_true,
+      lambda_vec   = lambda_vec,
+      lambda_noise = lambda_noise,
+      seed         = base_seed + rep   # distinct, reproducible seed per replicate
+    )
+    res_list[[rep]]$rep         <- rep
+    res_list[[rep]]$sigma_theta <- sigma_theta
+    res_list[[rep]]$n_group     <- n_per_group[1]
+  }
+  do.call(rbind, res_list)
+}
+```
+
+
+
+# Run the full grid
+
+Run once per `sigma_theta`, bind everything, and aggregate over replicates.
+This is the slow step (200 replicates x 4 heterogeneity levels).
+
+```{r run-grid}
+# Fixed parameters
+p            <- 10
+K            <- 8
+n_per_grp    <- rep(50, K)
+r_true       <- 3
+lambda_vec   <- c(4, 2, 1.5)
+lambda_noise <- 1
+R_reps       <- 200
+base_seed    <- 2025
+
+# Grid as specified in the paper
+tau_grid     <- c(0, 0.5, 1, 2, 3)
+r_values     <- c(1, 2, 3)
+sigma_grid   <- c(0.05, 0.1, 0.3, 0.5)
+
+sim_results_list <- vector("list", length(sigma_grid))
+
+for (s in seq_along(sigma_grid)) {
+  sigma_val <- sigma_grid[s]
+  cat("=== sigma_theta =", sigma_val, "===\n")
+
+  sim_results_list[[s]] <- run_simulation(
+    R            = R_reps,
+    p            = p,
+    K            = K,
+    n_per_group  = n_per_grp,
+    sigma_theta  = sigma_val,
+    tau_grid     = tau_grid,
+    r_values     = r_values,
+    r_true       = r_true,
+    lambda_vec   = lambda_vec,
+    lambda_noise = lambda_noise,
+    base_seed    = base_seed
+  )
+}
+
+# One data frame with everything, then aggregate over replicates
+sim_results_all <- do.call(rbind, sim_results_list)
+
+agg_results_all <- aggregate(
+  cbind(mean_angle, W, PVE_pct, A, S) ~ method + r + tau + sigma_theta,
+  data = sim_results_all,
+  FUN  = mean
+)
+
+write.csv(agg_results_all, "sim_agg_results.csv", row.names = FALSE)
+agg_results_all
+```
+
+
+# Tables in the paper (r = 3)
+
+```{r table-1}
+## Table 1: sigma_theta = 0.3, r = 3, trade-off across tau
+tab1 <- agg_results_all %>%
+  filter(sigma_theta == 0.3, r == 3) %>%
+  arrange(method, tau)
+
+knitr::kable(tab1, digits = 3,
+  caption = "Table 1: sigma_theta = 0.3, r = 3. Trade-off across tau.")
+```
+
+```{r table-2}
+## Table 2: r = 3, metrics across the sigma_theta grid (global + tau in {0, 1})
+tab2 <- agg_results_all %>%
+  filter(r == 3, method == "global" | tau %in% c(0, 1)) %>%
+  arrange(sigma_theta, method, tau)
+
+knitr::kable(tab2, digits = 3,
+  caption = "Table 2: r = 3. Metrics across the sigma_theta grid.")
+```
+
+```{r table-3}
+## Table 3: sigma_theta = 0.3, subspace A and S for r in {1, 2, 3}
+tab3 <- agg_results_all %>%
+  filter(sigma_theta == 0.3, method == "global" | tau %in% c(0, 1)) %>%
+  dplyr::select(method, r, tau, A, S) %>%
+  arrange(r, method, tau)
+
+knitr::kable(tab3, digits = 3,
+  caption = "Table 3: sigma_theta = 0.3, tau = 1. Subspace A and S for r in {1,2,3}.")
+```
+
+
+# Appendix tables: eigenvector-recovery angle (r = 3)
+
+```{r table-A1}
+## Appendix Table A1: angle error, sigma_theta = 0.3, r = 3, across tau
+tab_angle_tau <- agg_results_all %>%
+  filter(sigma_theta == 0.3, r == 3) %>%
+  dplyr::select(method, tau, mean_angle) %>%
+  arrange(method, tau)
+
+knitr::kable(tab_angle_tau, digits = 3,
+  caption = "Appendix Table A1: Angle error, sigma_theta = 0.3, r = 3, across tau.")
+```
+
+```{r table-A2}
+## Appendix Table A2: angle error, r = 3, across the sigma_theta grid
+tab_angle_sigma <- agg_results_all %>%
+  filter(r == 3, method == "global" | tau %in% c(0, 1)) %>%
+  dplyr::select(sigma_theta, method, tau, mean_angle) %>%
+  arrange(sigma_theta, method, tau)
+
+knitr::kable(tab_angle_sigma, digits = 3,
+  caption = "Appendix Table A2: Angle error, r = 3, across the sigma_theta grid.")
+```

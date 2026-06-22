@@ -1,0 +1,25 @@
+# R session files
+.Rhistory
+.RData
+.Rapp.history
+.Ruserdata
+
+# RStudio
+.Rproj.user/
+*.Rproj
+
+# Rendered notebooks / output
+*.nb.html
+*.html
+
+# Generated results (uncomment if you don't want these tracked)
+# sim_agg_results.csv
+
+# Local data (never commit the Census data to this repo)
+data/
+*.csv
+!sim_agg_results.csv
+
+# OS files
+.DS_Store
+Thumbs.db
