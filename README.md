@@ -9,7 +9,7 @@ alignment-strength parameter τ.
 
 ## Contents
 
-- `penalized_pca.R` — the method (`penalized_pca`) and the performance criteria:
+- `Global_PCA.R` — the method (`Global_PCA`) and the performance criteria:
   average within-group variance (W), proportion of variance explained (PVE),
   alignment index (A), and stability index (S).
 - `simulation.Rmd` — the Monte Carlo simulation study, which reproduces the
@@ -34,9 +34,9 @@ rmarkdown::render("simulation.Rmd")
 The core function can also be used on your own data:
 
 ```r
-source("penalized_pca.R")
+source("Global_PCA.R")
 
-fit <- penalized_pca(X, groups, r = 3, rho = tau * lambda_global[1:3])
+fit <- Global_PCA(X, groups, r = 3, rho = tau * lambda_global[1:3])
 # X       : numeric data matrix
 # groups  : grouping factor (one entry per row of X)
 # r       : number of global directions to align with
