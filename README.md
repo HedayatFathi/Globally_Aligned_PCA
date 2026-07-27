@@ -43,11 +43,12 @@ fit <- Global_PCA(X, groups, r = 3, rho = tau * lambda_global[1:3])
 # rho     : per-direction alignment strengths
 ```
 
+
 ## Citation
 
-> Fathi, H., Cremona, M. A., and Severino, F. (2026).
-> Globally aligned Principal Component Analysis for multi-group data.
-> submitted.
+> Fathi, H., Cremona, M. A., & Severino, F. (2026). *Globally aligned principal component analysis for multi-group data*. arXiv preprint arXiv:2607.21741.
+ https://arxiv.org/abs/2607.21741
+
 
 ## License
 
